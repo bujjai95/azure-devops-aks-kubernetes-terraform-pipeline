@@ -23,13 +23,13 @@ stages:
     steps:
     - checkout: self
 
-    # Debug to confirm latest code
+    # Debug to confirm correct code
     - script: |
         echo "Checking load_balancer_sku value..."
         grep -i load_balancer_sku terraform-manifests/07-aks-cluster.tf
       displayName: Debug Terraform File
 
-    # Check Terraform installed in agent
+    # Check Terraform installed
     - script: terraform version
       displayName: Check Terraform Version
 
@@ -43,13 +43,13 @@ stages:
         inlineScript: |
           az account show
 
-    # Terraform Init
+    # Terraform Init (FIXED: same backend + reconfigure)
     - script: |
-        terraform init \
+        terraform init -reconfigure \
         -backend-config="resource_group_name=terraform-storage-rg" \
         -backend-config="storage_account_name=goginenigirishstorage" \
         -backend-config="container_name=tfstatefiles" \
-        -backend-config="key=aks-base.tfstate"
+        -backend-config="key=aks-$(DEV_ENVIRONMENT).tfstate"
       workingDirectory: terraform-manifests
       displayName: Terraform Init
 
@@ -58,7 +58,7 @@ stages:
       workingDirectory: terraform-manifests
       displayName: Terraform Validate
 
-    # Publish artifact for next stage
+    # Publish artifact
     - task: PublishPipelineArtifact@1
       displayName: Publish Artifacts
       inputs:
@@ -103,9 +103,9 @@ stages:
           - script: terraform version
             displayName: Verify Terraform
 
-          # Terraform Init
+          # Terraform Init (same backend)
           - script: |
-              terraform init \
+              terraform init -reconfigure \
               -backend-config="resource_group_name=terraform-storage-rg" \
               -backend-config="storage_account_name=goginenigirishstorage" \
               -backend-config="container_name=tfstatefiles" \
