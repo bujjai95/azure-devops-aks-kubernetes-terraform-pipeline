@@ -1,15 +1,18 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger:
 - main
 
 pool:
   name: default
 
+variables:
+- name: DEV_ENVIRONMENT
+  value: dev 
+
 stages:
+
+# =========================
+# Stage 1: Validate
+# =========================
 - stage: TerraformValidate
   displayName: Terraform Validate Stage
 
@@ -20,16 +23,17 @@ stages:
     steps:
     - checkout: self
 
-    - task: PublishPipelineArtifact@1
-      displayName: Publish Artifacts
-      inputs:
-        targetPath: $(System.DefaultWorkingDirectory)/terraform-manifests
-        artifact: terraform-manifests-out
-        publishLocation: pipeline
+    # Debug to confirm latest code
+    - script: |
+        echo "Checking load_balancer_sku value..."
+        grep -i load_balancer_sku terraform-manifests/07-aks-cluster.tf
+      displayName: Debug Terraform File
 
+    # Check Terraform installed in agent
     - script: terraform version
       displayName: Check Terraform Version
 
+    # Azure Login
     - task: AzureCLI@2
       displayName: Azure Login
       inputs:
@@ -39,22 +43,87 @@ stages:
         inlineScript: |
           az account show
 
+    # Terraform Init
     - script: |
         terraform init \
         -backend-config="resource_group_name=terraform-storage-rg" \
         -backend-config="storage_account_name=goginenigirishstorage" \
         -backend-config="container_name=tfstatefiles" \
         -backend-config="key=aks-base.tfstate"
+      workingDirectory: terraform-manifests
       displayName: Terraform Init
-      workingDirectory: $(System.DefaultWorkingDirectory)/terraform-manifests
 
-    - script: |
-        terraform validate
+    # Terraform Validate
+    - script: terraform validate
+      workingDirectory: terraform-manifests
       displayName: Terraform Validate
-      workingDirectory: $(System.DefaultWorkingDirectory)/terraform-manifests
 
-    - script: |
-        echo -e "\033[1;32m=========================================\033[0m"
-        echo -e "\033[1;33m🔥🔥🔥 JAI GIREESH 🔥🔥🔥\033[0m"
-        echo -e "\033[1;32m=========================================\033[0m"
-      displayName: COLORED SUCCESS MESSAGE
+    # Publish artifact for next stage
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Artifacts
+      inputs:
+        targetPath: terraform-manifests
+        artifact: terraform-manifests-out
+
+
+# =========================
+# Stage 2: Deploy
+# =========================
+- stage: DeployAKSClusters
+  displayName: Deploy AKS
+  dependsOn: TerraformValidate
+
+  jobs:
+  - deployment: DeployDevAKSCluster
+    displayName: Deploy Dev AKS Cluster
+    pool:
+      name: default
+    environment: $(DEV_ENVIRONMENT)
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          # Download artifact
+          - task: DownloadPipelineArtifact@2
+            displayName: Download Terraform Artifacts
+            inputs:
+              artifact: terraform-manifests-out
+              path: $(Pipeline.Workspace)/terraform-manifests
+
+          # Download SSH Key
+          - task: DownloadSecureFile@1
+            displayName: Download SSH Key
+            name: sshkey
+            inputs:
+              secureFile: 'aks-terraform-devops-ssh-key-ububtu.pub'
+
+          # Verify Terraform
+          - script: terraform version
+            displayName: Verify Terraform
+
+          # Terraform Init
+          - script: |
+              terraform init \
+              -backend-config="resource_group_name=terraform-storage-rg" \
+              -backend-config="storage_account_name=goginenigirishstorage" \
+              -backend-config="container_name=tfstatefiles" \
+              -backend-config="key=aks-$(DEV_ENVIRONMENT).tfstate"
+            workingDirectory: $(Pipeline.Workspace)/terraform-manifests
+            displayName: Terraform Init
+
+          # Terraform Plan
+          - script: |
+              terraform plan \
+              -var ssh_public_key=$(sshkey.secureFilePath) \
+              -var environment=$(DEV_ENVIRONMENT) \
+              -out=tfplan
+            workingDirectory: $(Pipeline.Workspace)/terraform-manifests
+            displayName: Terraform Plan
+
+          # Terraform Apply
+          - script: |
+              terraform apply -auto-approve tfplan
+            workingDirectory: $(Pipeline.Workspace)/terraform-manifests
+            displayName: Terraform Apply
