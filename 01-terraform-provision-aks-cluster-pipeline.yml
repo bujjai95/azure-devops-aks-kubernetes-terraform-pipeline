@@ -23,19 +23,18 @@ stages:
     steps:
     - checkout: self
 
-    # Debug to confirm correct code
+    # Debug
     - script: |
         echo "Checking load_balancer_sku value..."
         grep -i load_balancer_sku terraform-manifests/07-aks-cluster.tf
       displayName: Debug Terraform File
 
-    # Check Terraform installed
     - script: terraform version
       displayName: Check Terraform Version
 
-    # Azure Login
+    # Run Terraform inside AzureCLI (IMPORTANT)
     - task: AzureCLI@2
-      displayName: Azure Login
+      displayName: Terraform Init & Validate
       inputs:
         azureSubscription: terraform-aks-azurerm-svc-con
         scriptType: bash
@@ -43,26 +42,16 @@ stages:
         inlineScript: |
           az account show
 
-    # Terraform Init (backend fixed)
-    - script: |
-        terraform init -reconfigure \
-        -backend-config="resource_group_name=terraform-storage-rg" \
-        -backend-config="storage_account_name=goginenigirishstorage" \
-        -backend-config="container_name=tfstatefiles" \
-        -backend-config="key=aks-$(DEV_ENVIRONMENT).tfstate"
-      workingDirectory: terraform-manifests
-      displayName: Terraform Init
+          terraform init -reconfigure \
+            -backend-config="resource_group_name=terraform-storage-rg" \
+            -backend-config="storage_account_name=goginenigirishstorage" \
+            -backend-config="container_name=tfstatefiles" \
+            -backend-config="key=aks-$(DEV_ENVIRONMENT).tfstate"
 
-    # 🔥 FIX: Permission issue
-    - script: |
-        chmod -R +x .terraform/providers
-      workingDirectory: terraform-manifests
-      displayName: Fix Provider Permissions
+          chmod -R +x .terraform/providers
 
-    # Terraform Validate
-    - script: terraform validate
-      workingDirectory: terraform-manifests
-      displayName: Terraform Validate
+          terraform validate
+          workingDirectory: terraform-manifests
 
     # Publish artifact
     - task: PublishPipelineArtifact@1
@@ -98,44 +87,47 @@ stages:
               artifact: terraform-manifests-out
               path: $(Pipeline.Workspace)/terraform-manifests
 
-          # Download SSH Key
+          # Download SSH key
           - task: DownloadSecureFile@1
             displayName: Download SSH Key
             name: sshkey
             inputs:
               secureFile: 'aks-terraform-devops-ssh-key-ububtu.pub'
 
-          # Verify Terraform
           - script: terraform version
             displayName: Verify Terraform
 
-          # Terraform Init
-          - script: |
-              terraform init -reconfigure \
-              -backend-config="resource_group_name=terraform-storage-rg" \
-              -backend-config="storage_account_name=goginenigirishstorage" \
-              -backend-config="container_name=tfstatefiles" \
-              -backend-config="key=aks-$(DEV_ENVIRONMENT).tfstate"
-            workingDirectory: $(Pipeline.Workspace)/terraform-manifests
-            displayName: Terraform Init
-
-          # 🔥 FIX: Permission issue again (new workspace)
-          - script: |
-              chmod -R +x .terraform/providers
-            workingDirectory: $(Pipeline.Workspace)/terraform-manifests
-            displayName: Fix Provider Permissions
-
-          # Terraform Plan
-          - script: |
-              terraform plan \
-              -var ssh_public_key=$(sshkey.secureFilePath) \
-              -var environment=$(DEV_ENVIRONMENT) \
-              -out=tfplan
-            workingDirectory: $(Pipeline.Workspace)/terraform-manifests
+          # Terraform Plan (inside AzureCLI)
+          - task: AzureCLI@2
             displayName: Terraform Plan
+            inputs:
+              azureSubscription: terraform-aks-azurerm-svc-con
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az account show
 
-          # Terraform Apply
-          - script: |
-              terraform apply -auto-approve tfplan
-            workingDirectory: $(Pipeline.Workspace)/terraform-manifests
+                terraform init -reconfigure \
+                  -backend-config="resource_group_name=terraform-storage-rg" \
+                  -backend-config="storage_account_name=goginenigirishstorage" \
+                  -backend-config="container_name=tfstatefiles" \
+                  -backend-config="key=aks-$(DEV_ENVIRONMENT).tfstate"
+
+                chmod -R +x .terraform/providers
+
+                terraform plan \
+                  -var ssh_public_key=$(sshkey.secureFilePath) \
+                  -var environment=$(DEV_ENVIRONMENT) \
+                  -out=tfplan
+                  workingDirectory: $(Pipeline.Workspace)/terraform-manifests
+
+          # Terraform Apply (inside AzureCLI)
+          - task: AzureCLI@2
             displayName: Terraform Apply
+            inputs:
+              azureSubscription: terraform-aks-azurerm-svc-con
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                terraform apply -auto-approve tfplan
+                 workingDirectory: $(Pipeline.Workspace)/terraform-manifests
