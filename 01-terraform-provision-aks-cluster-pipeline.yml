@@ -14,25 +14,14 @@ stages:
 # Stage 1: Validate
 # =========================
 - stage: TerraformValidate
-  displayName: Terraform Validate Stage
-
   jobs:
   - job: TerraformValidateJob
-    displayName: Terraform Validate Job
-
     steps:
     - checkout: self
-
-    # Debug
-    - script: |
-        echo "Checking load_balancer_sku value..."
-        grep -i load_balancer_sku terraform-manifests/07-aks-cluster.tf
-      displayName: Debug Terraform File
 
     - script: terraform version
       displayName: Check Terraform Version
 
-    # Run Terraform inside AzureCLI (IMPORTANT)
     - task: AzureCLI@2
       displayName: Terraform Init & Validate
       inputs:
@@ -40,6 +29,12 @@ stages:
         scriptType: bash
         scriptLocation: inlineScript
         inlineScript: |
+          cd $(System.DefaultWorkingDirectory)/terraform-manifests
+
+          echo "Current directory:"
+          pwd
+          ls -lrt
+
           az account show
 
           terraform init -reconfigure \
@@ -48,16 +43,13 @@ stages:
             -backend-config="container_name=tfstatefiles" \
             -backend-config="key=aks-$(DEV_ENVIRONMENT).tfstate"
 
-          chmod -R +x .terraform/providers
+          chmod -R +x .terraform/providers || true
 
           terraform validate
-          workingDirectory: terraform-manifests
 
-    # Publish artifact
     - task: PublishPipelineArtifact@1
-      displayName: Publish Artifacts
       inputs:
-        targetPath: terraform-manifests
+        targetPath: $(System.DefaultWorkingDirectory)/terraform-manifests
         artifact: terraform-manifests-out
 
 
@@ -65,12 +57,10 @@ stages:
 # Stage 2: Deploy
 # =========================
 - stage: DeployAKSClusters
-  displayName: Deploy AKS
   dependsOn: TerraformValidate
 
   jobs:
   - deployment: DeployDevAKSCluster
-    displayName: Deploy Dev AKS Cluster
     pool:
       name: default
     environment: $(DEV_ENVIRONMENT)
@@ -80,24 +70,18 @@ stages:
         deploy:
           steps:
 
-          # Download artifact
           - task: DownloadPipelineArtifact@2
-            displayName: Download Terraform Artifacts
             inputs:
               artifact: terraform-manifests-out
               path: $(Pipeline.Workspace)/terraform-manifests
 
-          # Download SSH key
           - task: DownloadSecureFile@1
-            displayName: Download SSH Key
             name: sshkey
             inputs:
               secureFile: 'aks-terraform-devops-ssh-key-ububtu.pub'
 
           - script: terraform version
-            displayName: Verify Terraform
 
-          # Terraform Plan (inside AzureCLI)
           - task: AzureCLI@2
             displayName: Terraform Plan
             inputs:
@@ -105,6 +89,12 @@ stages:
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
+                cd $(Pipeline.Workspace)/terraform-manifests
+
+                echo "Current directory:"
+                pwd
+                ls -lrt
+
                 az account show
 
                 terraform init -reconfigure \
@@ -113,15 +103,13 @@ stages:
                   -backend-config="container_name=tfstatefiles" \
                   -backend-config="key=aks-$(DEV_ENVIRONMENT).tfstate"
 
-                chmod -R +x .terraform/providers
+                chmod -R +x .terraform/providers || true
 
                 terraform plan \
                   -var ssh_public_key=$(sshkey.secureFilePath) \
                   -var environment=$(DEV_ENVIRONMENT) \
                   -out=tfplan
-                  workingDirectory: $(Pipeline.Workspace)/terraform-manifests
 
-          # Terraform Apply (inside AzureCLI)
           - task: AzureCLI@2
             displayName: Terraform Apply
             inputs:
@@ -129,5 +117,5 @@ stages:
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
+                cd $(Pipeline.Workspace)/terraform-manifests
                 terraform apply -auto-approve tfplan
-                 workingDirectory: $(Pipeline.Workspace)/terraform-manifests
